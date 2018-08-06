@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-monkey-api
+spec:
+  selector:
+    matchLabels:
+      app: security-monkey-api
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: security-monkey-api
+      # annotations:
+      #   iam.amazonaws.com/role: arn:aws:iam::xxxxxxxxxxxx:role/SecurityMonkeyInstanceProfile
+    spec:
+      containers:
+      - name: security-monkey-api
+        image: chosenken/security_monkey:ui
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512M
+          limits:
+            cpu: 1
+            memory: 1G
+        ports:
+        - containerPort: 8080
+        command:
+          - "/bin/bash"
+          - "-c"
+          - "/usr/sbin/nginx -g 'daemon on; master_process on;' && /usr/local/bin/monkey run_api_server"
+        env:
+          - name: SECURITY_MONKEY_SETTINGS
+            value: /usr/local/src/security_monkey/env-config/config.py
+          - name: PYTHONPATH
+            value: "/usr/local/src/security_monkey/"
+          - name: SECURITY_MONKEY_POSTGRES_URI
+            valueFrom:
+              secretKeyRef:
+                name: security-monkey
+                key: postgres-uri
+          - name: SECURITY_MONKEY_FQDN
+            value: ec2-XX-XXX-XXX-XXX.compute-1.amazonaws.com
+          - name: SECURITY_MONKEY_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: security-monkey
+                key: secret-key
+          - name: SECURITYMONKEY_SECRET_PASSWORD_SALT
+            valueFrom:
+              secretKeyRef:
+                name: security-monkey
+                key: secret-password-salt
+        volumeMounts:
+          - name: config-map
+            mountPath: /usr/local/src/security_monkey/env-config/config.py
+            subPath: config.py
+          - name: config-map
+            mountPath: /etc/nginx/sites-enabled/nginx.conf
+            subPath: nginx.conf
+      volumes:
+        - name: config-map
+          configMap:
+            name: security-monkey-configs
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: security-monkey-api
+spec:
+  selector:
+    app: security-monkey-api
+  ports:
+  - port: 8080
+    targetPort: 8080

@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-monkey-scheduler
+spec:
+  selector:
+    matchLabels:
+      app: security-monkey-scheduler
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: security-monkey-scheduler
+      # annotations:
+      #   iam.amazonaws.com/role: arn:aws:iam::xxxxxxxxxxxx:role/SecurityMonkeyInstanceProfile
+    spec:
+      containers:
+      - name: security-monkey-scheduler
+        image: chosenken/security_monkey:latest
+        resources:
+          requests:
+            cpu: 250m
+            memory: 128M
+          limits:
+            cpu: 500m
+            memory: 256M
+        command:
+          - "/bin/bash"
+          - "-c"
+          - "/usr/local/bin/celery -A security_monkey.task_scheduler.beat.CELERY -s /tmp/sm-celerybeat-schedule --pidfile=/tmp/sm-celerybeat-scheduler.pid beat -l debug"
+        env:
+          - name: SECURITY_MONKEY_REDIS_HOST
+            value: <Redis Host URL>
+          - name: SECURITY_MONKEY_POSTGRES_URI
+            valueFrom:
+              secretKeyRef:
+                name: secret-monkey
+                key: postgres-uri
+          - name: SECURITY_MONKEY_SETTINGS
+            value: /usr/local/src/security_monkey/env-config/config.py
+          - name: PYTHONPATH
+            value: "/usr/local/src/security_monkey/"
+        volumeMounts:
+          - name: config-map
+            mountPath: /usr/local/src/security_monkey/env-config
+      volumes:
+        - name: config-map
+          configMap:
+            name: security-monkey-config
