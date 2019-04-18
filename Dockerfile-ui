@@ -21,7 +21,7 @@ RUN apt-get install -y curl apt-transport-https && \
     curl https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
     curl https://storage.googleapis.com/download.dartlang.org/linux/debian/dart_stable.list > /etc/apt/sources.list.d/dart_stable.list && \
     apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y dart nginx && \
+    DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y dart=1.24.* nginx && \
     apt-get clean -y && \
     cd /usr/local/src/security_monkey/dart && \
     /usr/lib/dart/bin/pub get && \
@@ -32,3 +32,5 @@ RUN apt-get install -y curl apt-transport-https && \
     rm /etc/nginx/sites-enabled/default
 
 EXPOSE 5000 8080
+
+ee34f0c01eb3dcd99ca4a0bed786ac6017fe27bf98a83c6a4824d83aafb18fba
