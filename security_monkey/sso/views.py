@@ -22,6 +22,13 @@ try:
 except ImportError:
     onelogin_import_success = False
 
+try:
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Requests as GoogleAuthTransportRequests
+    google_import_success = True
+except ImportError:
+    google_import_success = False
+
 from .service import fetch_token_header_payload, get_rsa_public_key, setup_user
 
 from security_monkey.datastore import User
@@ -226,6 +233,14 @@ class Google(Resource):
         self.reqparse = reqparse.RequestParser()
         super(Google, self).__init__()
 
+        if self._isAuthMethod('directory'):
+            creds = service_account.Credentials.from_service_account_file(
+                current_app.config.get("GOOGLE_DOMAIN_WIDE_DELEGATION_KEY_PATH"), scopes=['https://www.googleapis.com/auth/admin.directory.group.readonly'])
+            self.credentials = creds.with_subject(current_app.config.get("GOOGLE_DOMAIN_WIDE_DELEGATION_SUBJECT"))
+
+    def _isAuthMethod(self, method):
+        return current_app.config.get("GOOGLE_AUTH_API_METHOD").lower() == method
+
     def get(self):
         return self.post()
 
@@ -250,7 +265,13 @@ class Google(Resource):
             return_to = current_app.config.get('WEB_PATH')
 
         access_token_url = 'https://accounts.google.com/o/oauth2/token'
-        people_api_url = 'https://www.googleapis.com/plus/v1/people/me/openIdConnect'
+
+        if self._isAuthMethod('directory'):
+            auth_method_api_url = 'https://www.googleapis.com/admin/directory/v1/groups'
+        elif self._isAuthMethod('people'):
+            auth_method_api_url = 'https://www.googleapis.com/userinfo/v2/me'
+        else:
+            return dict(message='Auth method not supported'), 403
 
         args = self.reqparse.parse_args()
 
@@ -271,6 +292,7 @@ class Google(Resource):
 
         # Step 1bis. Validate (some information of) the id token (if necessary)
         google_hosted_domain = current_app.config.get("GOOGLE_HOSTED_DOMAIN")
+        userKey = None
         if google_hosted_domain is not None:
             current_app.logger.debug('We need to verify that the token was issued for this hosted domain: %s ' % (google_hosted_domain))
 
@@ -288,26 +310,62 @@ class Google(Resource):
                 current_app.logger.debug('Verification failed: %s != %s' % (token_hd, google_hosted_domain))
                 return dict(message='Token is invalid %s' % token), 403
             current_app.logger.debug('Verification passed')
+            userKey = payload_data.get('email')
 
         # Step 2. Retrieve information about the current user
-        headers = {'Authorization': 'Bearer {0}'.format(token['access_token'])}
+        if self._isAuthMethod('directory'):
+            if not self.credentials.token:
+                current_app.logger.debug('Attempting refresh credentials to obtain initial access token')
+                self.credentials.refresh(GoogleAuthTransportRequests())
 
-        r = requests.get(people_api_url, headers=headers)
-        r.raise_for_status()
-        profile = r.json()
+            headers = {'Authorization': 'Bearer {0}'.format(self.credentials.token)}
 
-        if 'email' not in profile:
-            raise UnableToAccessGoogleEmail()
+            api_url = "%(url)s?domain=%(domain)s&userKey=%(email)s&fields=groups/email" % {'url': auth_method_api_url,
+                                                                                           'domain': google_hosted_domain,
+                                                                                           'email': userKey}
+            r = requests.get(api_url, headers=headers)
+            groups = r.json()
+            current_app.logger.debug('authenticated user with groups: %s' % groups)
+            if len(groups.get('groups', [])) == 0:
+                return dict(message='Groups association is invald for %s' % userKey), 403
+            else:
+                groupsEmails = [o['email'] for o in groups.get('groups', [])]
+                default_role = current_app.config.get('GOOGLE_DEFAULT_ROLE', 'View')
 
-        user = setup_user(profile.get('email'), profile.get('groups', []), current_app.config.get('GOOGLE_DEFAULT_ROLE', 'View'))
+                if current_app.config.get('GOOGLE_ADMIN_ROLE_GROUP_NAME') and \
+                        current_app.config.get('GOOGLE_ADMIN_ROLE_GROUP_NAME') in groupsEmails:
+                    default_role = "Admin"
 
-        # Tell Flask-Principal the identity changed
-        identity_changed.send(current_app._get_current_object(), identity=Identity(user.id))
-        login_user(user)
-        db.session.commit()
-        db.session.refresh(user)
+                current_app.logger.debug('Authenticating user %s as role %s' % (userKey, default_role))
+                user = setup_user(userKey, groupsEmails, default_role)
 
-        return redirect(return_to, code=302)
+                # Tell Flask-Principal the identity changed
+                identity_changed.send(current_app._get_current_object(), identity=Identity(user.id))
+                login_user(user)
+                db.session.commit()
+                db.session.refresh(user)
+
+                return redirect(return_to, code=302)
+        elif self._isAuthMethod('people'):
+            headers = {'Authorization': 'Bearer {0}'.format(token['access_token'])}
+
+            r = requests.get(auth_method_api_url, headers=headers)
+            r.raise_for_status()
+            profile = r.json()
+
+            if 'email' not in profile:
+                raise UnableToAccessGoogleEmail()
+
+            user = setup_user(profile.get('email'), profile.get('groups', []),
+                              current_app.config.get('GOOGLE_DEFAULT_ROLE', 'View'))
+
+            # Tell Flask-Principal the identity changed
+            identity_changed.send(current_app._get_current_object(), identity=Identity(user.id))
+            login_user(user)
+            db.session.commit()
+            db.session.refresh(user)
+
+            return redirect(return_to, code=302)
 
 
 class OneLogin(Resource):
@@ -401,6 +459,88 @@ class OneLogin(Resource):
             return redirect(auth.login(return_to=return_to))
 
 
+class Okta(Resource):
+    decorators = [rbac.allow(["anonymous"], ["GET", "POST"])]
+    def __init__(self):
+        self.reqparse = reqparse.RequestParser()
+        super(Okta, self).__init__()
+
+    def get(self):
+        return self.post()
+
+    def post(self):
+        if "okta" not in current_app.config.get("ACTIVE_PROVIDERS"):
+            return "Okta is not enabled in the config.  See the ACTIVE_PROVIDERS section.", 404
+
+        default_state = 'clientId,{client_id},redirectUri,{redirectUri},return_to,{return_to}'.format(
+            client_id=current_app.config.get('OKTA_CLIENT_ID'),
+            redirectUri=current_app.config.get('OKTA_REDIRECT_URI'),
+            return_to=current_app.config.get('WEB_PATH')
+        )
+
+        self.reqparse.add_argument('code', type=str, required=False)
+        self.reqparse.add_argument('state', type=str, required=False, default=default_state)
+
+        args = self.reqparse.parse_args()
+        client_id = args['state'].split(',')[1]
+        redirect_uri = args['state'].split(',')[3]
+        return_to = args['state'].split(',')[5]
+        code = args['code']
+
+        if not validate_redirect_url(return_to):
+            return_to = current_app.config.get('WEB_PATH')
+
+        basic = base64.b64encode(bytes('{0}:{1}'.format(client_id, current_app.config.get("OKTA_CLIENT_SECRET"))))
+        headers = {
+            'Authorization': 'Basic {0}'.format(basic.decode('utf-8')),
+            'Content-Type': 'application/x-www-form-urlencoded',
+        }
+
+        access_token_url = current_app.config.get('OKTA_TOKEN_ENDPOINT')
+        params = {
+            'code': code,
+            'grant_type': 'authorization_code',
+            'redirect_uri': redirect_uri
+        }
+
+        r = requests.post(access_token_url, headers=headers, params=params)
+        id_token = r.json()['id_token']
+
+        # fetch token public key
+        header_data = fetch_token_header_payload(id_token)[0]
+        jwks_url = current_app.config.get('OKTA_JWKS_URI')
+
+        # retrieve the key material as specified by the token header
+        r = requests.get(jwks_url)
+        for key in r.json()['keys']:
+            if key['kid'] == header_data['kid']:
+                secret = get_rsa_public_key(key['n'], key['e'])
+                algo = header_data['alg']
+                break
+        else:
+            return dict(message='Key not found'), 403
+
+        # Validate your token based on the key it was signed with
+        try:
+            valid_token = jwt.decode(id_token, secret.decode('utf-8'), algorithms=[algo], audience=client_id)
+        except jwt.DecodeError:
+            return dict(message='Token is invalid'), 403
+        except jwt.ExpiredSignatureError:
+            return dict(message='Token has expired'), 403
+        except jwt.InvalidTokenError:
+            return dict(message='Token is invalid'), 403
+
+        user = setup_user(valid_token['email'], '', current_app.config.get('OKTA_DEFAULT_ROLE', 'View'))
+
+        # Tell Flask-Principal the identity changed
+        identity_changed.send(current_app._get_current_object(), identity=Identity(user.id))
+        login_user(user)
+        db.session.commit()
+        db.session.refresh(user)
+
+        return redirect(return_to, code=302)
+
+
 class Providers(Resource):
     decorators = [rbac.allow(["anonymous"], ["GET"])]
     def __init__(self):
@@ -428,17 +568,17 @@ class Providers(Resource):
                     'type': '2.0'
                 })
             elif provider == "aad":
-                    active_providers.append({
-                        'name': current_app.config.get("AAD_NAME"),
-                        'url': current_app.config.get('AAD_REDIRECT_URI'),
-                        'redirectUri': current_app.config.get("AAD_REDIRECT_URI"),
-                        'clientId': current_app.config.get("AAD_CLIENT_ID"),
-                        'nonce': nonce,
-                        'responseType': 'id_token+code',
-                        'response_mode': 'form_post',
-                        'scope': ['email'],
-                        'authorizationEndpoint': current_app.config.get("AAD_AUTH_ENDPOINT"),
-                    })
+                active_providers.append({
+                    'name': current_app.config.get("AAD_NAME"),
+                    'url': current_app.config.get('AAD_REDIRECT_URI'),
+                    'redirectUri': current_app.config.get("AAD_REDIRECT_URI"),
+                    'clientId': current_app.config.get("AAD_CLIENT_ID"),
+                    'nonce': nonce,
+                    'responseType': 'id_token+code',
+                    'response_mode': 'form_post',
+                    'scope': ['email'],
+                    'authorizationEndpoint': current_app.config.get("AAD_AUTH_ENDPOINT"),
+                })
             elif provider == "google":
                 google_provider = {
                     'name': 'google',
@@ -458,15 +598,31 @@ class Providers(Resource):
                     'name': 'OneLogin',
                     'authorizationEndpoint': api.url_for(OneLogin)
                 })
+            elif provider == "okta":
+                active_providers.append({
+                    'name': current_app.config.get("OKTA_NAME"),
+                    'url': current_app.config.get("OKTA_REDIRECT_URI"),
+                    'redirectUri': current_app.config.get("OKTA_REDIRECT_URI"),
+                    'clientId': current_app.config.get("OKTA_CLIENT_ID"),
+                    'responseType': 'code',
+                    'scope': ['openid', 'email'],
+                    'nonce': nonce,
+                    'scopeDelimiter': ' ',
+                    'authorizationEndpoint': current_app.config.get('OKTA_AUTH_ENDPOINT'),
+                })
             else:
                 raise Exception("Unknown authentication provider: {0}".format(provider))
 
         return active_providers
 
+
 api.add_resource(AzureAD, '/auth/aad', endpoint='aad')
 api.add_resource(Ping, '/auth/ping', endpoint='ping')
-api.add_resource(Google, '/auth/google', endpoint='google')
+api.add_resource(Okta, '/auth/okta', endpoint='okta')
 api.add_resource(Providers, '/auth/providers', endpoint='providers')
+
+if google_import_success:
+    api.add_resource(Google, '/auth/google', endpoint='google')
 
 if onelogin_import_success:
     api.add_resource(OneLogin, '/auth/onelogin', endpoint='onelogin')

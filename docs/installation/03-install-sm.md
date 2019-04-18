@@ -58,6 +58,9 @@ Releases are on the master branch and are updated about every three months. Blee
     pip install --upgrade pip
     pip install --upgrade urllib3[secure]   # to prevent InsecurePlatformWarning
     pip install google-compute-engine  # Only required on GCP
+    pip install oauth2client # Required to retrieve GCP data
+    pip install google-api-python-client # Required to retrieve GCP data
+    pip install httplib2 # Required to retrieve GCP data
     pip install cloudaux\[gcp\]
     pip install cloudaux\[openstack\]    # Only required on OpenStack
     python setup.py develop
@@ -94,8 +97,8 @@ If you're using the bleeding edge (develop) branch, you will need to compile the
     /usr/lib/dart/bin/pub build
 
     # Copy the compiled Web UI to the appropriate destination
-    sudo mkdir -p /usr/local/src/security_monkey/security_monkey/static/
-    sudo /bin/cp -R /usr/local/src/security_monkey/dart/build/web/* /usr/local/src/security_monkey/security_monkey/static/
+    sudo mkdir -p /usr/local/src/security_monkey/static/
+    sudo /bin/cp -R /usr/local/src/security_monkey/dart/build/web/* /usr/local/src/security_monkey/static/
     sudo chgrp -R www-data /usr/local/src/security_monkey
 
 ### Configure the Application
