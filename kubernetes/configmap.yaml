@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: security-monkey-configs
+  name: security-monkey-config
 data:
   nginx.conf: |-
     add_header X-Content-Type-Options "nosniff";

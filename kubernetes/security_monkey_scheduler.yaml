@@ -34,7 +34,7 @@ spec:
           - name: SECURITY_MONKEY_POSTGRES_URI
             valueFrom:
               secretKeyRef:
-                name: secret-monkey
+                name: security-monkey
                 key: postgres-uri
           - name: SECURITY_MONKEY_SETTINGS
             value: /usr/local/src/security_monkey/env-config/config.py

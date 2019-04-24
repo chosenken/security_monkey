@@ -26,11 +26,9 @@ RUN apt-get install -y curl apt-transport-https && \
     cd /usr/local/src/security_monkey/dart && \
     /usr/lib/dart/bin/pub get && \
     /usr/lib/dart/bin/pub build && \
-    mkdir -p /usr/local/src/security_monkey/security_monkey/static/ && \
-    /bin/cp -R /usr/local/src/security_monkey/dart/build/web/* /usr/local/src/security_monkey/security_monkey/static/ && \
-    chgrp -R www-data /usr/local/src/security_monkey && \
+    mkdir -p /usr/local/src/security_monkey/static/ && \
+    /bin/cp -R /usr/local/src/security_monkey/dart/build/web/* /usr/local/src/security_monkey/static/ && \
+    chgrp -R www-data /usr/local/src/security_monkey/static && \
     rm /etc/nginx/sites-enabled/default
 
 EXPOSE 5000 8080
-
-ee34f0c01eb3dcd99ca4a0bed786ac6017fe27bf98a83c6a4824d83aafb18fba
